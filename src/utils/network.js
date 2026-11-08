@@ -1,5 +1,5 @@
 import mqtt from 'mqtt';
-import { dealCards, sortHand } from './cards';
+import { dealCards, sortHand, findKaro2Seat } from './cards';
 import { determineTrickWinner, getNextSeat, getPlayableCards, SEAT_ORDER } from './rules';
 import { chooseBotContract, chooseBotCard } from './bot';
 import { calculateRoundScores, checkEarlyRoundFinish } from './scoring';
@@ -12,11 +12,13 @@ const BROKERS = [
 export function getDefaultRoomState(pin = '1923') {
   return {
     pin,
-    status: 'lobby',
-    gameRound: 1,
+    status: 'lobby', // 'lobby' | 'selecting_contract' | 'playing' | 'trick_won' | 'round_finished' | 'game_finished'
+    gameRound: 1, // 1 - 20
     totalRounds: 20,
+    karo2Seat: null, // 1. elde Karo 2'ye sahip olan koltuk
     contractSelectorSeat: 'south',
     turnSeat: 'south',
+    turnDeadline: null, // 30 saniye hamle sayacı (ms timestamp)
     currentContract: null,
     activeContract: 'Kontrat Seçiliyor...',
     hostId: null,
@@ -33,10 +35,10 @@ export function getDefaultRoomState(pin = '1923') {
       north: [],
       east: [],
     },
-    trickCards: [],
-    trickHistory: [],
-    roundHistory: [],
-    lastRoundResult: null,
+    trickCards: [], // [{ seat, card, playerName }]
+    trickHistory: [], // O el boyunca atılan tüm löveler
+    roundHistory: [], // Geçmiş 20 elin puan tablosu: [{ roundNumber, contractName, scores, details }]
+    lastRoundResult: null, // { scores, details, contract }
     earlyFinishReason: null,
     trickNumber: 1,
     isHeartBroken: false,
@@ -64,7 +66,7 @@ class CloudGameNetwork {
     this.seat = 'south';
     this.isConnected = false;
     this.roomState = getDefaultRoomState('1923');
-    this.botTimer = null;
+    this.turnTimer = null;
     this.trickTimer = null;
     this.processedActionIds = new Set();
     this.callbacks = {
@@ -249,11 +251,14 @@ class CloudGameNetwork {
       }
 
       const dealtHands = dealCards();
+      const firstSelector = findKaro2Seat(dealtHands);
       current.hands = dealtHands;
       current.status = 'selecting_contract';
       current.gameRound = 1;
-      current.contractSelectorSeat = 'south';
-      current.turnSeat = 'south';
+      current.karo2Seat = firstSelector;
+      current.contractSelectorSeat = firstSelector;
+      current.turnSeat = firstSelector;
+      current.turnDeadline = Date.now() + 30000;
       current.currentContract = null;
       current.activeContract = 'Kontrat Seçiliyor...';
       current.trickCards = [];
@@ -280,11 +285,18 @@ class CloudGameNetwork {
       stateModified = true;
 
     } else if (action.type === 'SELECT_CONTRACT') {
-      const { contract, selectorSeat } = action;
+      // ÇİFT DÜŞME / ÇİFT TIKLAMA KESİN KİLİDİ:
+      if (current.status !== 'selecting_contract') return;
+      const expectedSeat = current.contractSelectorSeat;
+      const seatKey = action.selectorSeat || expectedSeat;
+      if (seatKey !== expectedSeat) return;
+
+      const { contract } = action;
       current.currentContract = contract;
       current.activeContract = contract.name;
       current.status = 'playing';
-      current.turnSeat = selectorSeat || current.contractSelectorSeat;
+      current.turnSeat = seatKey;
+      current.turnDeadline = Date.now() + 30000;
       current.trickCards = [];
       current.trickHistory = [];
       current.trickNumber = 1;
@@ -293,7 +305,6 @@ class CloudGameNetwork {
       current.lastTrickWinner = null;
       current.earlyFinishReason = null;
 
-      const seatKey = selectorSeat || current.contractSelectorSeat;
       const selector = current.seats[seatKey];
       if (selector) {
         if (contract.type === 'penalty') {
@@ -313,7 +324,8 @@ class CloudGameNetwork {
     } else if (action.type === 'PLAY_CARD') {
       const { card, seat, playerName } = action;
 
-      if (current.status === 'trick_won' || current.status === 'round_finished') return;
+      if (current.status !== 'playing') return;
+      if (current.turnSeat !== seat) return;
       if (current.trickCards.some(tc => tc.seat === seat)) return;
 
       if (current.hands[seat]) {
@@ -340,9 +352,12 @@ class CloudGameNetwork {
 
       if (current.trickCards.length < 4) {
         current.turnSeat = getNextSeat(seat);
+        current.turnDeadline = Date.now() + 30000;
         current.updatedAt = Date.now();
         stateModified = true;
       } else {
+        // 4 KART ATILDI! LÖVE TAMAMLANDI!
+        current.turnDeadline = null;
         const winner = determineTrickWinner(current.trickCards, current.currentContract);
         const winnerSeat = winner.seat;
         const winnerName = current.seats[winnerSeat]?.name || winnerSeat;
@@ -351,6 +366,7 @@ class CloudGameNetwork {
           current.seats[winnerSeat].tricksWon = (current.seats[winnerSeat].tricksWon || 0) + 1;
         }
 
+        // Trick geçmişine kaydet
         current.trickHistory.push({
           trickNumber: current.trickNumber,
           cards: [...current.trickCards],
@@ -366,6 +382,7 @@ class CloudGameNetwork {
         current.updatedAt = Date.now();
         stateModified = true;
 
+        // 1.5 saniye sonra çöz ve devam et / erken bitir
         if (this.trickTimer) clearTimeout(this.trickTimer);
         this.trickTimer = setTimeout(() => {
           this.finishTrick(winnerSeat);
@@ -378,6 +395,7 @@ class CloudGameNetwork {
         current.contractSelectorSeat = getNextSeat(current.contractSelectorSeat);
         current.turnSeat = current.contractSelectorSeat;
         current.status = 'selecting_contract';
+        current.turnDeadline = Date.now() + 30000;
         current.currentContract = null;
         current.activeContract = 'Kontrat Seçiliyor...';
         current.trickNumber = 1;
@@ -399,6 +417,7 @@ class CloudGameNetwork {
         }
       } else {
         current.status = 'game_finished';
+        current.turnDeadline = null;
       }
 
       current.updatedAt = Date.now();
@@ -466,11 +485,13 @@ class CloudGameNetwork {
     }
   }
 
+  // Löveyi bitirme ve ERKEN BİTİRME (Claim) kontrolü
   finishTrick(winnerSeat) {
     const current = { ...this.roomState };
     current.trickCards = [];
     current.lastTrickWinner = null;
 
+    // 1. ERKEN BİTİRME KONTROLÜ (Rıfkı yedirildi mi, tüm kızlar/erkekler bitti mi?)
     const earlyCheck = checkEarlyRoundFinish({
       contract: current.currentContract,
       trickHistory: current.trickHistory,
@@ -479,8 +500,10 @@ class CloudGameNetwork {
     const is13TricksDone = current.trickNumber >= 13;
 
     if (earlyCheck || is13TricksDone) {
+      // EL BİTTİ! (Erken bitirme veya 13 löve)
       current.earlyFinishReason = earlyCheck?.reason || null;
 
+      // Puanları hesapla
       const { scores, details } = calculateRoundScores({
         contract: current.currentContract,
         trickHistory: current.trickHistory,
@@ -492,12 +515,14 @@ class CloudGameNetwork {
         },
       });
 
+      // Oyuncuların toplam skorlarına ekle
       for (const s of SEAT_ORDER) {
         if (current.seats[s]) {
           current.seats[s].totalScore = (current.seats[s].totalScore || 0) + (scores[s] || 0);
         }
       }
 
+      // 20'lik yazboz geçmişine ekle
       current.roundHistory.push({
         roundNumber: current.gameRound,
         contractName: current.currentContract.name,
@@ -511,11 +536,14 @@ class CloudGameNetwork {
         contract: current.currentContract,
       };
 
-      current.status = 'round_finished';
+      current.status = 'round_finished'; // El Sonu Özet Modalı açılır!
+      current.turnDeadline = null;
     } else {
+      // Löve devam ediyor: kazanan oyuncu yeni löveyi başlatır!
       current.trickNumber++;
       current.turnSeat = winnerSeat;
       current.status = 'playing';
+      current.turnDeadline = Date.now() + 30000;
     }
 
     current.updatedAt = Date.now();
@@ -530,74 +558,113 @@ class CloudGameNetwork {
     this.checkBotTurn();
   }
 
+  // Sıra Bot'taysa veya İnsan Oyuncu 30 saniye süre aşımına uğradıysa otomatik hamle motoru
   checkBotTurn() {
-    if (this.botTimer) clearTimeout(this.botTimer);
+    if (this.turnTimer) clearTimeout(this.turnTimer);
 
-    const { status, turnSeat, contractSelectorSeat, seats, hands, currentContract, gameRound, contractsRecord, trickCards } = this.roomState;
+    const {
+      status,
+      turnSeat,
+      contractSelectorSeat,
+      seats,
+      hands,
+      currentContract,
+      gameRound,
+      contractsRecord,
+      trickCards,
+      isHeartBroken,
+      isTrumpBroken,
+      turnDeadline,
+    } = this.roomState;
 
-    if (status === 'trick_won' || status === 'round_finished' || status === 'game_finished' || status === 'lobby') {
+    if (status !== 'selecting_contract' && status !== 'playing') {
       return;
     }
+
+    const activeSeat = (status === 'selecting_contract') ? contractSelectorSeat : turnSeat;
+    const activePlayer = seats[activeSeat];
+    if (!activePlayer) return;
+
+    const isBot = activePlayer.playerId?.startsWith('bot_') || activePlayer.isBot;
+
+    if (isBot) {
+      // BOT HAMLESİ: Botlar hızlıca (800ms - 1000ms) oynasın
+      this.turnTimer = setTimeout(() => {
+        this.executeAutoTurn(activeSeat);
+      }, status === 'selecting_contract' ? 1000 : 800);
+      return;
+    }
+
+    // İNSAN OYUNCU: 30 Saniye Hamle Sayacı (Bekleten oyuncuyu otomatik bot gibi oynatır)
+    const deadline = turnDeadline || (Date.now() + 30000);
+    const msRemaining = Math.max(0, deadline - Date.now());
+
+    this.turnTimer = setTimeout(() => {
+      // Süre dolduğunda kontrol et: Hala aynı tur ve aynı sırada mıyız?
+      if (this.roomState.status !== status) return;
+      const currentActiveSeat = (status === 'selecting_contract')
+        ? this.roomState.contractSelectorSeat
+        : this.roomState.turnSeat;
+      if (currentActiveSeat !== activeSeat) return;
+
+      // Duplicate önleme: Sadece sıra kendisinde olan oyuncu VEYA oda sahibi (host) gönderir
+      const isMe = activePlayer.playerId === this.playerId;
+      const isHost = this.playerId === this.roomState.hostId;
+      if (isMe || isHost) {
+        this.executeAutoTurn(activeSeat);
+      }
+    }, msRemaining + 250);
+  }
+
+  // Otomatik hamle yürütücüsü (Botlar ve 30 sn süre aşımı yaşayan oyuncular için)
+  executeAutoTurn(activeSeat) {
+    const { status, seats, hands, currentContract, gameRound, contractsRecord, trickCards, isHeartBroken, isTrumpBroken } = this.roomState;
+    const player = seats[activeSeat];
+    if (!player) return;
 
     if (status === 'selecting_contract') {
-      const selector = seats[contractSelectorSeat];
-      if (selector && selector.playerId?.startsWith('bot_')) {
-        this.botTimer = setTimeout(() => {
-          const botHand = hands[contractSelectorSeat] || [];
-          const contract = chooseBotContract({
-            botSeat: contractSelectorSeat,
-            gameRound,
-            playerState: selector,
-            contractsRecord,
-            botHand,
-          });
+      const playerHand = hands[activeSeat] || [];
+      const contract = chooseBotContract({
+        botSeat: activeSeat,
+        gameRound,
+        playerState: player,
+        contractsRecord,
+        botHand: playerHand,
+      });
 
-          this.sendAction({
-            type: 'SELECT_CONTRACT',
-            contract,
-            selectorSeat: contractSelectorSeat,
-            playerId: selector.playerId,
-          });
-        }, 1000);
-      }
-      return;
-    }
+      this.sendAction({
+        type: 'SELECT_CONTRACT',
+        contract,
+        selectorSeat: activeSeat,
+        playerId: player.playerId,
+      });
+    } else if (status === 'playing') {
+      if (trickCards.some(tc => tc.seat === activeSeat)) return;
+      const playerHand = hands[activeSeat] || [];
+      if (playerHand.length === 0) return;
 
-    if (status === 'playing') {
-      const turnPlayer = seats[turnSeat];
-      if (turnPlayer && turnPlayer.playerId?.startsWith('bot_')) {
-        if (trickCards.some(tc => tc.seat === turnSeat)) return;
+      const playableIds = getPlayableCards({
+        hand: playerHand,
+        trickCards,
+        contract: currentContract,
+        isHeartBroken,
+        isTrumpBroken,
+      });
 
-        this.botTimer = setTimeout(() => {
-          if (this.roomState.status !== 'playing' || this.roomState.turnSeat !== turnSeat) return;
+      const cardToPlay = chooseBotCard({
+        hand: playerHand,
+        playableCardIds: playableIds,
+        trickCards,
+        contract: currentContract,
+      });
 
-          const botHand = hands[turnSeat] || [];
-          if (botHand.length === 0) return;
-
-          const playableIds = getPlayableCards({
-            hand: botHand,
-            trickCards: this.roomState.trickCards,
-            contract: this.roomState.currentContract,
-            isHeartBroken: this.roomState.isHeartBroken,
-            isTrumpBroken: this.roomState.isTrumpBroken,
-          });
-
-          const cardToPlay = chooseBotCard({
-            hand: botHand,
-            playableCardIds: playableIds,
-            trickCards: this.roomState.trickCards,
-            contract: this.roomState.currentContract,
-          });
-
-          this.sendAction({
-            type: 'PLAY_CARD',
-            card: cardToPlay,
-            seat: turnSeat,
-            playerId: turnPlayer.playerId,
-            playerName: turnPlayer.name,
-          });
-        }, 800);
-      }
+      this.sendAction({
+        type: 'PLAY_CARD',
+        card: cardToPlay,
+        seat: activeSeat,
+        playerId: player.playerId,
+        playerName: player.name,
+      });
     }
   }
 

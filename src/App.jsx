@@ -4,15 +4,17 @@ import Table from './components/Table';
 import { cloudNetwork, getDefaultRoomState } from './utils/network';
 import { getStoredSession, saveSession, generatePlayerId } from './utils/storage';
 import { playDealSound, playTauntSound } from './utils/audio';
-import { AlertCircle, Globe } from 'lucide-react';
+import { AlertCircle, Globe, Wifi, WifiOff, Sparkles, RefreshCw } from 'lucide-react';
 
 export default function App() {
+  // Yerel oturum durumu (localStorage)
   const session = getStoredSession() || {};
   const [playerId] = useState(() => session.playerId || generatePlayerId());
   const [playerName, setPlayerName] = useState(() => session.playerName || 'Oyuncu ' + Math.floor(100 + Math.random() * 900));
   const [roomPin, setRoomPin] = useState(() => session.roomPin || '1923');
   const [currentSeat, setCurrentSeat] = useState(() => session.seat || 'south');
 
+  // Gerçek zamanlı oda ve el durumu
   const [roomState, setRoomState] = useState(() => getDefaultRoomState('1923'));
   const [isConnected, setIsConnected] = useState(false);
   const [connectionStatusText, setConnectionStatusText] = useState('İnternet bağlantısı başlatılıyor...');
@@ -20,6 +22,7 @@ export default function App() {
   const [activeTaunt, setActiveTaunt] = useState(null);
   const tauntTimeoutRef = useRef(null);
 
+  // 4 Renk Deste Modu (Kupa: Kırmızı, Maça: Siyah, Karo: Mavi, Sinek: Yeşil)
   const [isFourColor, setIsFourColor] = useState(() => {
     try {
       return localStorage.getItem('king_four_color') === 'true';
@@ -38,6 +41,7 @@ export default function App() {
     });
   };
 
+  // Bulut Ağı Başlatma (Farklı internetlerden uzaktan bağlantı)
   useEffect(() => {
     cloudNetwork.init({
       roomPin,
@@ -46,6 +50,8 @@ export default function App() {
       seat: currentSeat,
       onStateChange: (newState) => {
         setRoomState({ ...newState });
+
+        // Kartlar yeni dağıtıldıysa ses çal
         if (newState.status === 'playing' && newState.hands && newState.hands[currentSeat]?.length > 0) {
           playDealSound();
         }
@@ -72,12 +78,14 @@ export default function App() {
     });
   }, []);
 
+  // PIN kodu değiştiğinde odayı güncelle
   const handleRoomPinChange = (newPin) => {
     setRoomPin(newPin);
     saveSession({ playerId, playerName, roomPin: newPin, seat: currentSeat });
     cloudNetwork.changeRoom(newPin);
   };
 
+  // Koltuk Seçimi
   const handleSelectSeat = (seatKey) => {
     if (!playerName.trim()) {
       setErrorMessage('Lütfen önce bir oyuncu adı giriniz.');
@@ -97,6 +105,7 @@ export default function App() {
     });
   };
 
+  // 4 Gerçek Oyuncu ile Oyunu Başlat
   const handleStartGame = () => {
     cloudNetwork.sendAction({
       type: 'START_GAME',
@@ -104,7 +113,9 @@ export default function App() {
     });
   };
 
+  // 🤖 TEST MODU: Boş Koltukları Botla Doldur ve HEMEN Başlat!
   const handleFillBotsAndStart = () => {
+    // Önce kendimizi geçerli bir koltuğa oturtalım (eğer koltuk yoksa 'south' yap)
     const validSeat = currentSeat && currentSeat !== 'spectator' ? currentSeat : 'south';
     setCurrentSeat(validSeat);
     saveSession({ playerId, playerName, roomPin, seat: validSeat });
@@ -112,6 +123,7 @@ export default function App() {
     cloudNetwork.playerName = playerName;
     cloudNetwork.seat = validSeat;
 
+    // Kendimizi ekle ve botları doldurup HEMEN oyunu başlat
     cloudNetwork.sendAction({
       type: 'JOIN',
       playerId,
@@ -127,6 +139,7 @@ export default function App() {
     playDealSound();
   };
 
+  // Masayı Temizle
   const handleClearSeats = () => {
     cloudNetwork.sendAction({
       type: 'CLEAR_SEATS',
@@ -134,12 +147,14 @@ export default function App() {
     });
   };
 
+  // Sataşma / Laf At Gönder
   const handleSendTaunt = (text) => {
     if (text) {
       cloudNetwork.sendTaunt(text);
     }
   };
 
+  // Lobiye Dön / Koltuk Değiştir
   const handleResetToLobby = () => {
     cloudNetwork.sendAction({
       type: 'RESET_TO_LOBBY',
@@ -147,7 +162,10 @@ export default function App() {
     });
   };
 
+  // Kontrat Seçimi (Çift tıklama ve sıra korumalı)
   const handleSelectContract = (contract) => {
+    if (roomState?.status !== 'selecting_contract') return;
+    if (roomState?.contractSelectorSeat !== currentSeat) return;
     cloudNetwork.sendAction({
       type: 'SELECT_CONTRACT',
       contract,
@@ -156,7 +174,10 @@ export default function App() {
     });
   };
 
+  // Kart Oynama (Masaya Atma - Sıra korumalı)
   const handlePlayCard = (card) => {
+    if (roomState?.status !== 'playing') return;
+    if (roomState?.turnSeat !== currentSeat) return;
     cloudNetwork.sendAction({
       type: 'PLAY_CARD',
       card,
@@ -166,6 +187,7 @@ export default function App() {
     });
   };
 
+  // El Sonu: Sonraki Ele Geç
   const handleNextRound = () => {
     cloudNetwork.sendAction({
       type: 'NEXT_ROUND',
@@ -173,6 +195,7 @@ export default function App() {
     });
   };
 
+  // Yancı (İzleyici) ile Koltuk Takası
   const handleSwapWithSpectator = (targetSeat) => {
     cloudNetwork.sendAction({
       type: 'SWAP_SEAT_WITH_SPECTATOR',
@@ -181,6 +204,7 @@ export default function App() {
     });
   };
 
+  // Oyuncunun Kendi Elindeki Kartlar (13 Kart)
   const isSpectator = currentSeat === 'spectator';
   const myHand = (!isSpectator && roomState?.hands && roomState.hands[currentSeat])
     ? roomState.hands[currentSeat]
@@ -190,6 +214,8 @@ export default function App() {
 
   return (
     <div className="w-full h-full relative overflow-hidden bg-slate-950 font-['Outfit',sans-serif]">
+      
+      {/* Üst Bağlantı Bilgi Şeridi (İnternet Durumu - Farklı Şehirler / Mobil Veri) */}
       <div className="w-full bg-slate-900/90 border-b border-slate-800 px-3 py-1 text-[10px] flex items-center justify-between text-slate-400 z-40">
         <div className="flex items-center gap-1.5">
           <Globe className="w-3 h-3 text-sky-400" />
@@ -201,6 +227,7 @@ export default function App() {
         </div>
       </div>
 
+      {/* Hata Bildirimi (Toast) */}
       {errorMessage && (
         <div className="fixed top-8 left-1/2 -translate-x-1/2 z-50 animate-pop-in bg-rose-600/95 text-white text-xs font-bold px-4 py-2 rounded-2xl shadow-2xl flex items-center gap-2 border border-rose-400">
           <AlertCircle className="w-4 h-4" />
@@ -208,6 +235,7 @@ export default function App() {
         </div>
       )}
 
+      {/* Ana Ekran: Lobi veya Masa */}
       <div className="w-full h-[calc(100%-25px)]">
         {isPlaying ? (
           <Table
@@ -247,6 +275,7 @@ export default function App() {
           />
         )}
       </div>
+
     </div>
   );
 }

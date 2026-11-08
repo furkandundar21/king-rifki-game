@@ -19,10 +19,11 @@ export const VALUES = [
   { value: 10, label: '10' },
   { value: 11, label: 'J' },
   { value: 12, label: 'Q' },
-  { value: 13, label: 'K' },
+  { value: 13, label: 'K' }, // Kupa K = RIFKI
   { value: 14, label: 'A' },
 ];
 
+// 52 Kartı Oluştur
 export function createDeck() {
   const deck = [];
   for (const suit of SUITS) {
@@ -36,13 +37,14 @@ export function createDeck() {
         suitOrder: suit.order,
         value: val.value,
         label: val.label,
-        isRifki: suit.id === 'H' && val.value === 13,
+        isRifki: suit.id === 'H' && val.value === 13, // Kupa Papazı
       });
     }
   }
   return deck;
 }
 
+// Fisher-Yates Karıştırma Algoritması
 export function shuffleDeck(deck) {
   const shuffled = [...deck];
   for (let i = shuffled.length - 1; i > 0; i--) {
@@ -52,14 +54,15 @@ export function shuffleDeck(deck) {
   return shuffled;
 }
 
+// 4 Oyuncuya 13'er Kart Dağıt
 export function dealCards() {
   const shuffled = shuffleDeck(createDeck());
-  const seatKeys = ['south', 'west', 'north', 'east'];
+  const seatKeys = ['south', 'east', 'north', 'west'];
   const hands = {
     south: [],
-    west: [],
-    north: [],
     east: [],
+    north: [],
+    west: [],
   };
 
   seatKeys.forEach((seat, idx) => {
@@ -70,6 +73,19 @@ export function dealCards() {
   return hands;
 }
 
+// Karo 2 (♦2) hangi koltuktaysa o koltuğu bulur (King kuralı: 1. oyunu Karo 2 kimdeyse o seçer)
+export function findKaro2Seat(hands) {
+  if (!hands) return 'south';
+  const seatKeys = ['south', 'east', 'north', 'west'];
+  for (const s of seatKeys) {
+    if (hands[s] && hands[s].some(c => c.suit === 'D' && c.value === 2)) {
+      return s;
+    }
+  }
+  return 'south';
+}
+
+// Eli Renk ve Sayıya Göre Sırala (Kupa -> Maça -> Karo -> Sinek, 2'den As'a)
 export function sortHand(cards) {
   if (!cards || !Array.isArray(cards)) return [];
   return [...cards].sort((a, b) => {

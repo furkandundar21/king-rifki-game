@@ -1,16 +1,26 @@
-import React, { useState } from 'react';
-import { AlertTriangle, Swords } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Crown, AlertTriangle, Swords, Shield, Sparkles, Check, Clock } from 'lucide-react';
 import { CONTRACT_DEFINITIONS } from '../utils/rules';
 
 export default function ContractModal({
   isOpen,
   gameRound = 1,
-  playerState = {},
+  playerState = {}, // { penaltiesLeft: 3, trumpsLeft: 2 }
   contractsRecord = {},
   onSelectContract,
   isMyTurn = false,
   selectorPlayerName = '',
+  secondsLeft = 30,
+  karo2Seat = null,
 }) {
+  const [selectedTrumpSuit, setSelectedTrumpSuit] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Modal açıldığında veya yeni el başladığında tıklama kilidini sıfırla
+  useEffect(() => {
+    setIsSubmitting(false);
+  }, [isOpen, gameRound]);
+
   if (!isOpen) return null;
 
   const isFirstFourRounds = gameRound <= 4;
@@ -26,6 +36,16 @@ export default function ContractModal({
     { id: 'C', symbol: '♣', name: 'Sinek', color: 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border-emerald-300' },
   ];
 
+  // Çift tıklamayı ve çift düşmeyi önleyen korumalı seçim fonksiyonu
+  const handleChoose = (contract) => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    if (onSelectContract) {
+      onSelectContract(contract);
+    }
+  };
+
+  // Sıra bende değilse (Diğer oyuncular beklerken görünen şık bildirim)
   if (!isMyTurn) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-pop-in select-none">
@@ -34,36 +54,79 @@ export default function ContractModal({
             👑
           </div>
           <div>
-            <span className="text-xs font-bold text-amber-400 bg-amber-950/80 px-2.5 py-1 rounded-full border border-amber-600/40">
-              El {gameRound} / 20
-            </span>
-            <h3 className="text-lg font-black text-white mt-2">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <span className="text-xs font-bold text-amber-400 bg-amber-950/80 px-2.5 py-1 rounded-full border border-amber-600/40">
+                El {gameRound} / 20
+              </span>
+              <span className={`text-xs font-black px-2.5 py-1 rounded-full border flex items-center gap-1 ${
+                secondsLeft <= 10
+                  ? 'bg-rose-950 text-rose-300 border-rose-500 animate-pulse'
+                  : 'bg-slate-950 text-amber-300 border-amber-600/40'
+              }`}>
+                <Clock className="w-3.5 h-3.5" />
+                <span>{secondsLeft}s</span>
+              </span>
+            </div>
+
+            <h3 className="text-lg font-black text-white mt-1">
               Kontrat Seçiliyor
             </h3>
             <p className="text-sm text-slate-300 mt-1">
               Sıra <strong className="text-amber-300">{selectorPlayerName}</strong> oyuncusunda, kontrat seçmesi bekleniyor...
             </p>
+
+            {gameRound === 1 && (
+              <div className="mt-2.5 text-[11px] font-bold text-rose-400 bg-rose-950/50 border border-rose-800/40 px-2.5 py-1 rounded-xl">
+                ♦ 1. El Kuralı: Karo 2 {selectorPlayerName}'de olduğu için ilk oyunu o seçiyor.
+              </div>
+            )}
           </div>
+
           <div className="flex items-center justify-center gap-1.5 text-xs text-emerald-400 font-medium">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-            <span>Oyun başlamak üzere</span>
+            <span>{secondsLeft <= 5 ? 'Süre bitmek üzere (Otomatik seçim yapılacak)...' : 'Oyun başlamak üzere'}</span>
           </div>
         </div>
       </div>
     );
   }
 
+  // Sıra bende: Kontrat Seçim Paneli
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3.5 bg-slate-950/85 backdrop-blur-md animate-pop-in select-none">
       <div className="w-full max-w-md bg-slate-900 border border-amber-500/50 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+        
+        {/* Üst Başlık ve Geri Sayım Sayacı */}
         <div className="p-3 bg-gradient-to-r from-amber-950 via-slate-900 to-amber-950 border-b border-amber-500/40 text-center relative">
-          <div className="flex items-center justify-center gap-2">
-            <span className="text-xl">👑</span>
-            <h2 className="text-base font-black text-white tracking-wide">
-              Kontrat Seçin (Sıra Sizde!)
-            </h2>
+          <div className="flex items-center justify-between px-1">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xl">👑</span>
+              <h2 className="text-base font-black text-white tracking-wide">
+                Kontrat Seçin!
+              </h2>
+            </div>
+
+            {/* 30 Saniye Sayacı */}
+            <div
+              className={`flex items-center gap-1 text-xs font-black px-2.5 py-1 rounded-full border transition-all duration-300 ${
+                secondsLeft <= 10
+                  ? 'bg-rose-950 text-rose-300 border-rose-500 animate-pulse'
+                  : 'bg-slate-950 text-amber-300 border-amber-500/40'
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span>{secondsLeft} sn</span>
+            </div>
           </div>
-          <div className="flex items-center justify-center gap-2 mt-1 text-[11px]">
+
+          {/* Karo 2 Hatırlatması */}
+          {gameRound === 1 && (
+            <div className="mt-1 text-[11px] font-bold text-rose-300 bg-rose-950/70 border border-rose-600/40 rounded-xl px-2 py-0.5">
+              ♦ Karo 2 (♦2) sizde! 1. oyunun kontratını siz belirliyorsunuz.
+            </div>
+          )}
+
+          <div className="flex items-center justify-center gap-2 mt-1.5 text-[11px]">
             <span className="text-amber-300 font-bold bg-slate-950/80 px-2 py-0.5 rounded-full border border-slate-700">
               El: {gameRound}/20
             </span>
@@ -76,7 +139,10 @@ export default function ContractModal({
           </div>
         </div>
 
+        {/* İçerik */}
         <div className="p-3.5 space-y-3.5 overflow-y-auto">
+          
+          {/* 1. CEZALAR BÖLÜMÜ */}
           <div>
             <div className="flex items-center justify-between mb-1.5 px-1">
               <span className="text-xs font-black text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -93,14 +159,14 @@ export default function ContractModal({
                 const rec = contractsRecord[item.id] || { played: 0, total: 2 };
                 const remainingInPool = (item.total - (rec.played || 0));
                 const isPoolEmpty = remainingInPool <= 0;
-                const isDisabled = penaltiesLeft <= 0 || isPoolEmpty;
+                const isDisabled = penaltiesLeft <= 0 || isPoolEmpty || isSubmitting;
 
                 return (
                   <button
                     key={item.id}
                     disabled={isDisabled}
                     onClick={() => {
-                      onSelectContract({
+                      handleChoose({
                         type: 'penalty',
                         id: item.id,
                         name: item.name,
@@ -131,6 +197,7 @@ export default function ContractModal({
             </div>
           </div>
 
+          {/* 2. KOZLAR BÖLÜMÜ */}
           <div>
             <div className="flex items-center justify-between mb-1.5 px-1">
               <span className="text-xs font-black text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -142,6 +209,7 @@ export default function ContractModal({
               </span>
             </div>
 
+            {/* ÖZEL KURAL 1: İlk 4 El Koz Yasağı Uyarısı */}
             {isFirstFourRounds ? (
               <div className="p-2.5 rounded-2xl bg-amber-950/40 border border-amber-600/40 text-center space-y-1">
                 <div className="text-xs font-black text-amber-300 flex items-center justify-center gap-1">
@@ -165,8 +233,9 @@ export default function ContractModal({
                   {trumpSuits.map((ts) => (
                     <button
                       key={ts.id}
+                      disabled={isSubmitting}
                       onClick={() => {
-                        onSelectContract({
+                        handleChoose({
                           type: 'trump',
                           id: 'koz',
                           name: `Koz: ${ts.symbol} ${ts.name}`,
@@ -175,6 +244,7 @@ export default function ContractModal({
                       }}
                       className={`
                         p-2.5 rounded-2xl border text-center transition-all duration-200 active:scale-95 cursor-pointer shadow-md flex flex-col items-center justify-center
+                        ${isSubmitting ? 'opacity-50 cursor-not-allowed' : ''}
                         ${ts.color}
                       `}
                     >
@@ -186,7 +256,9 @@ export default function ContractModal({
               </div>
             )}
           </div>
+
         </div>
+
       </div>
     </div>
   );
